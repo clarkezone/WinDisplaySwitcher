@@ -6,20 +6,23 @@ using System.Runtime.InteropServices;
 
 /// <summary>
 /// Registers and manages global hotkeys on a dedicated background thread
-/// with its own Win32 message pump, ensuring WM_HOTKEY messages are
-/// always dispatched regardless of WinUI 3's message loop behavior.
+/// with its own Win32 message pump.
+///
+/// Uses RegisterHotKey with HWND=NULL so WM_HOTKEY is posted to the
+/// thread's message queue. The GetMessage loop handles messages directly
+/// without DispatchMessage — matching the proven pattern from WindowsStack.
+/// Cross-thread communication uses PostThreadMessage.
 /// </summary>
 public sealed class HotkeyService : IDisposable
 {
     private readonly SettingsService _settingsService;
     private readonly ProfileApplyService _profileApplyService;
     private readonly Dictionary<int, ResolutionProfile> _registeredHotkeys = new();
-    private IntPtr _hwnd;
     private int _nextId = 1;
     private Thread? _thread;
+    private uint _threadId;
     private volatile bool _initialized;
     private readonly ManualResetEventSlim _readyEvent = new(false);
-    private NativeMethods.WndProc? _wndProcDelegate; // prevent GC
 
     public HotkeyService(SettingsService settingsService, ProfileApplyService profileApplyService)
     {
@@ -33,55 +36,40 @@ public sealed class HotkeyService : IDisposable
     public void Initialize()
     {
         _thread = new Thread(MessageLoop) { IsBackground = true, Name = "HotkeyThread" };
-        _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
         _readyEvent.Wait(5000);
     }
 
     private void MessageLoop()
     {
-        _wndProcDelegate = WndProc;
-        _hwnd = NativeMethods.CreateMessageWindow("DisplaySwitcherHotkey", _wndProcDelegate);
-        _initialized = _hwnd != IntPtr.Zero;
+        // Capture this thread's ID for PostThreadMessage from other threads
+        _threadId = NativeMethods.GetCurrentThreadId();
 
-        if (_initialized)
-            RegisterAllInternal();
-
+        // Register all current hotkeys (must be done on this thread)
+        RegisterAllInternal();
+        _initialized = true;
         _readyEvent.Set();
 
-        if (!_initialized) return;
-
-        // Standard Win32 message pump — dispatches WM_HOTKEY and custom messages
+        // Message pump — handle messages directly, no DispatchMessage needed.
+        // RegisterHotKey(NULL) posts WM_HOTKEY to the thread queue.
+        // PostThreadMessage posts custom messages to the thread queue.
+        // GetMessage retrieves both.
         while (NativeMethods.GetMessageInt(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
-            NativeMethods.TranslateMessage(ref msg);
-            NativeMethods.DispatchMessageW(ref msg);
-        }
-
-        // After WM_QUIT, clean up the window
-        NativeMethods.DestroyWindow(_hwnd);
-        _hwnd = IntPtr.Zero;
-    }
-
-    private IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
-    {
-        switch (msg)
-        {
-            case (uint)NativeMethods.WM_HOTKEY:
-                ProcessHotkey((int)wParam);
-                return IntPtr.Zero;
-
-            case NativeMethods.WM_USER_REFRESH_HOTKEYS:
+            if (msg.message == (uint)NativeMethods.WM_HOTKEY)
+            {
+                ProcessHotkey((int)msg.wParam);
+            }
+            else if (msg.message == NativeMethods.WM_USER_REFRESH_HOTKEYS)
+            {
                 RegisterAllInternal();
-                return IntPtr.Zero;
-
-            case NativeMethods.WM_USER_QUIT_HOTKEYS:
+            }
+            else if (msg.message == NativeMethods.WM_USER_QUIT_HOTKEYS)
+            {
                 UnregisterAllInternal();
                 NativeMethods.PostQuitMessage(0);
-                return IntPtr.Zero;
+            }
         }
-
-        return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
     /// <summary>
@@ -90,8 +78,8 @@ public sealed class HotkeyService : IDisposable
     /// </summary>
     public void Refresh()
     {
-        if (_initialized && _hwnd != IntPtr.Zero)
-            NativeMethods.PostMessageW(_hwnd, NativeMethods.WM_USER_REFRESH_HOTKEYS, IntPtr.Zero, IntPtr.Zero);
+        if (_initialized && _threadId != 0)
+            NativeMethods.PostThreadMessage(_threadId, NativeMethods.WM_USER_REFRESH_HOTKEYS, IntPtr.Zero, IntPtr.Zero);
     }
 
     // Called only on the hotkey thread
@@ -104,9 +92,9 @@ public sealed class HotkeyService : IDisposable
             if (!profile.HasHotkey) continue;
 
             int id = _nextId++;
-            // MOD_NOREPEAT prevents auto-repeat from firing repeatedly
             int mods = profile.HotkeyModifiers | NativeMethods.MOD_NOREPEAT;
-            if (NativeMethods.RegisterHotKey(_hwnd, id, mods, profile.HotkeyVk))
+            // Register with HWND=NULL — WM_HOTKEY posted to this thread's queue
+            if (NativeMethods.RegisterHotKey(IntPtr.Zero, id, mods, profile.HotkeyVk))
             {
                 _registeredHotkeys[id] = profile;
                 System.Diagnostics.Debug.WriteLine(
@@ -126,7 +114,7 @@ public sealed class HotkeyService : IDisposable
     {
         foreach (var id in _registeredHotkeys.Keys)
         {
-            NativeMethods.UnregisterHotKey(_hwnd, id);
+            NativeMethods.UnregisterHotKey(IntPtr.Zero, id);
         }
         _registeredHotkeys.Clear();
     }
@@ -142,9 +130,9 @@ public sealed class HotkeyService : IDisposable
 
     public void Dispose()
     {
-        if (_initialized && _hwnd != IntPtr.Zero)
+        if (_initialized && _threadId != 0)
         {
-            NativeMethods.PostMessageW(_hwnd, NativeMethods.WM_USER_QUIT_HOTKEYS, IntPtr.Zero, IntPtr.Zero);
+            NativeMethods.PostThreadMessage(_threadId, NativeMethods.WM_USER_QUIT_HOTKEYS, IntPtr.Zero, IntPtr.Zero);
         }
         _thread?.Join(3000);
         _readyEvent.Dispose();
