@@ -29,12 +29,14 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="{Binding DisplayLabel}" VerticalAlignment="Center"/>
                         <TextBlock Grid.Column="1" Text="{Binding HotkeyDisplay}" VerticalAlignment="Center" Foreground="Gray"/>
                         <Button Grid.Column="2" Content="Set Hotkey" Tag="{Binding}" Click="OnSetHotkeyClick"/>
-                        <Button Grid.Column="3" Content="Clear" Tag="{Binding}" Click="OnClearHotkeyClick"/>
-                        <Button Grid.Column="4" Content="Remove" Tag="{Binding}" Click="OnRemoveClick"/>
+                        <Button Grid.Column="3" Content="Clear Hotkey" Tag="{Binding}" Click="OnClearHotkeyClick"/>
+                        <Button Grid.Column="4" Content="Edit" Tag="{Binding}" Click="OnEditClick"/>
+                        <Button Grid.Column="5" Content="Remove" Tag="{Binding}" Click="OnRemoveClick"/>
                     </Grid>
                 </DataTemplate>
             </ListView.ItemTemplate>

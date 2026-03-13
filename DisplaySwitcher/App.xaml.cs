@@ -1,6 +1,5 @@
 namespace DisplaySwitcher;
 
-using DisplaySwitcher.Interop;
 using DisplaySwitcher.Services;
 using DisplaySwitcher.Views;
 using Microsoft.UI.Xaml;
@@ -26,7 +25,6 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        // Initialize services (constructor calls Load automatically)
         _settingsService = new SettingsService();
 
         _displayService = new DisplayService();
@@ -36,15 +34,12 @@ public partial class App : Application
         _trayIconService = new TrayIconService(_settingsService, _profileApplyService);
         _trayIconService.Initialize();
 
+        // HotkeyService runs its own message pump thread — no HWND parameter needed
         _hotkeyService = new HotkeyService(_settingsService, _profileApplyService);
-        _hotkeyService.Initialize(_trayIconService.Hwnd);
+        _hotkeyService.Initialize();
 
-        // Wire up events
         _trayIconService.SettingsRequested += OnSettingsRequested;
         _trayIconService.ExitRequested += OnExitRequested;
-
-        // Inject hotkey handling into the message loop
-        InjectHotkeyHandling();
     }
 
     private void OnSettingsRequested()
@@ -66,24 +61,5 @@ public partial class App : Application
         _hotkeyService.Dispose();
         _trayIconService.Dispose();
         Exit();
-    }
-
-    /// <summary>
-    /// Subclass the tray message window to intercept WM_HOTKEY before default dispatch.
-    /// We do this by replacing the WndProc on the hidden message window.
-    /// Since TrayIconService already owns the WndProc, we inject via a wrapper approach:
-    /// HotkeyService.ProcessHotkey is called from TrayIconService's WndProc.
-    /// </summary>
-    private void InjectHotkeyHandling()
-    {
-        // The TrayIconService's WndProc doesn't know about hotkeys directly.
-        // We handle this by modifying TrayIconService to also check for WM_HOTKEY,
-        // or by subclassing. For simplicity, we'll add a hook via the shared HWND.
-        // The hotkey WM_HOTKEY messages will be dispatched to the message window.
-        // Since TrayIconService's WndProc calls DefWindowProc for unhandled messages,
-        // and WM_HOTKEY is only sent to the registered hwnd, we need to hook it.
-        // 
-        // Solution: We update TrayIconService to accept an optional WM_HOTKEY handler.
-        _trayIconService.HotkeyHandler = _hotkeyService.ProcessHotkey;
     }
 }

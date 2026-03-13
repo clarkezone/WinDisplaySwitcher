@@ -22,6 +22,12 @@ public sealed partial class SettingsWindow : Window
     {
         this.InitializeComponent();
 
+        // Set a smaller default window size
+        if (AppWindow != null)
+        {
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 480));
+        }
+
         _viewModel = new SettingsViewModel(
             settingsService, displayService, scalingService, hotkeyService, trayIconService);
 
@@ -29,14 +35,12 @@ public sealed partial class SettingsWindow : Window
         MonitorCombo.ItemsSource = _viewModel.Monitors;
         AutoStartToggle.IsOn = _viewModel.AutoStartEnabled;
 
-        // Wire up events in code-behind (top-level elements)
         AddProfileBtn.Click += OnAddProfileClick;
         MonitorCombo.SelectionChanged += OnMonitorSelectionChanged;
         ConfirmAddBtn.Click += OnConfirmAddClick;
         CancelAddBtn.Click += OnCancelAddClick;
         AutoStartToggle.Toggled += OnAutoStartToggled;
 
-        // Enable hotkey capture on the window
         if (this.Content is UIElement rootElement)
         {
             rootElement.PreviewKeyDown += OnPreviewKeyDown;
@@ -45,11 +49,47 @@ public sealed partial class SettingsWindow : Window
 
     private void OnAddProfileClick(object sender, RoutedEventArgs e)
     {
+        _viewModel.EditingItem = null;
         AddPanel.Visibility = Visibility.Visible;
+        ConfirmAddBtn.Content = "Add";
         _viewModel.StartAddProfileCommand.Execute(null);
         MonitorCombo.ItemsSource = _viewModel.Monitors;
         if (_viewModel.SelectedMonitor != null)
             MonitorCombo.SelectedItem = _viewModel.SelectedMonitor;
+    }
+
+    private void OnEditClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not ProfileItem item) return;
+
+        _viewModel.EditingItem = item;
+        AddPanel.Visibility = Visibility.Visible;
+        ConfirmAddBtn.Content = "Save";
+        _viewModel.StartAddProfileCommand.Execute(null);
+        MonitorCombo.ItemsSource = _viewModel.Monitors;
+
+        // Pre-select the monitor
+        foreach (var mon in _viewModel.Monitors)
+        {
+            if (mon.DeviceName == item.Profile.DeviceName)
+            {
+                MonitorCombo.SelectedItem = mon;
+                break;
+            }
+        }
+
+        // Pre-select resolution (mode list populated by monitor selection)
+        foreach (var mode in _viewModel.AvailableModes)
+        {
+            if (mode.ResolutionEquals(item.Profile.Mode))
+            {
+                ResolutionCombo.SelectedItem = mode;
+                break;
+            }
+        }
+
+        // Pre-select scale
+        ScaleCombo.SelectedItem = item.Profile.Mode.ScalePercent;
     }
 
     private void OnMonitorSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -76,12 +116,15 @@ public sealed partial class SettingsWindow : Window
 
         _viewModel.ConfirmAddProfileCommand.Execute(null);
         AddPanel.Visibility = Visibility.Collapsed;
+        ConfirmAddBtn.Content = "Add";
     }
 
     private void OnCancelAddClick(object sender, RoutedEventArgs e)
     {
+        _viewModel.EditingItem = null;
         _viewModel.CancelAddProfileCommand.Execute(null);
         AddPanel.Visibility = Visibility.Collapsed;
+        ConfirmAddBtn.Content = "Add";
     }
 
     private void OnRemoveClick(object sender, RoutedEventArgs e)
@@ -116,7 +159,6 @@ public sealed partial class SettingsWindow : Window
 
         var key = e.Key;
 
-        // Skip modifier-only keys
         if (key == Windows.System.VirtualKey.Control ||
             key == Windows.System.VirtualKey.Shift ||
             key == Windows.System.VirtualKey.Menu ||
@@ -126,7 +168,6 @@ public sealed partial class SettingsWindow : Window
             return;
         }
 
-        // Build modifiers
         int modifiers = 0;
         var state = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control);
         if (state.HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down))

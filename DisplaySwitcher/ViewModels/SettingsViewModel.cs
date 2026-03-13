@@ -34,6 +34,11 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool _isAddingProfile;
 
+    /// <summary>
+    /// When non-null, the add panel is in "edit" mode for this item.
+    /// </summary>
+    public ProfileItem? EditingItem { get; set; }
+
     public SettingsViewModel(
         SettingsService settingsService,
         DisplayService displayService,
@@ -114,20 +119,34 @@ public partial class SettingsViewModel : ObservableObject
     {
         if (SelectedMonitor == null || SelectedMode == null) return;
 
-        var profile = new ResolutionProfile
+        var newMode = new DisplayMode(
+            SelectedMode.Width, SelectedMode.Height,
+            SelectedMode.RefreshRate, SelectedScale,
+            SelectedMode.BitsPerPixel);
+
+        if (EditingItem != null)
         {
-            DeviceName = SelectedMonitor.DeviceName,
-            MonitorName = SelectedMonitor.FriendlyName,
-            Mode = new DisplayMode(
-                SelectedMode.Width, SelectedMode.Height,
-                SelectedMode.RefreshRate, SelectedScale,
-                SelectedMode.BitsPerPixel)
-        };
+            // Update the existing profile in-place (preserves hotkey assignment)
+            EditingItem.Profile.DeviceName = SelectedMonitor.DeviceName;
+            EditingItem.Profile.MonitorName = SelectedMonitor.FriendlyName;
+            EditingItem.Profile.Mode = newMode;
+            EditingItem.DisplayLabel = EditingItem.Profile.DisplayLabel;
+            EditingItem = null;
+        }
+        else
+        {
+            var profile = new ResolutionProfile
+            {
+                DeviceName = SelectedMonitor.DeviceName,
+                MonitorName = SelectedMonitor.FriendlyName,
+                Mode = newMode
+            };
 
-        _settingsService.AddProfile(profile);
-        Profiles.Add(new ProfileItem(profile));
+            _settingsService.AddProfile(profile);
+            Profiles.Add(new ProfileItem(profile));
+        }
+
         IsAddingProfile = false;
-
         SaveAndRefresh();
     }
 

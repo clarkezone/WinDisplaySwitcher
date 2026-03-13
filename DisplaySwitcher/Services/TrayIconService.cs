@@ -36,14 +36,6 @@ public sealed class TrayIconService : IDisposable
     public event Action? SettingsRequested;
     public event Action? ExitRequested;
 
-    /// <summary>
-    /// Optional callback for WM_HOTKEY messages — set by App to bridge to HotkeyService.
-    /// Signature: (int hotkeyId) => void
-    /// </summary>
-    public Action<int>? HotkeyHandler { get; set; }
-
-    public IntPtr Hwnd => _hwnd;
-
     public TrayIconService(SettingsService settingsService, ProfileApplyService profileApplyService)
     {
         _settingsService = settingsService;
@@ -148,10 +140,6 @@ public sealed class TrayIconService : IDisposable
             case WM_COMMAND:
                 int menuId = (int)(wParam & 0xFFFF);
                 HandleMenuCommand(menuId);
-                return IntPtr.Zero;
-
-            case NativeMethods.WM_HOTKEY:
-                HotkeyHandler?.Invoke((int)wParam);
                 return IntPtr.Zero;
         }
 
