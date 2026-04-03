@@ -3,118 +3,157 @@ namespace DisplaySwitcher.Services;
 using DisplaySwitcher.Models;
 
 /// <summary>
-/// Orchestrates applying a resolution profile with smart-apply logic:
-/// - If only scale differs from current state → change scale only (no flicker)
-/// - If resolution differs → change resolution first, then scale
-/// - If everything matches → no-op
+/// Orchestrates applying a composite profile with independent axes:
+/// 1. Topology (optional) — only if profile.Topology is non-null
+/// 2. Per-monitor resolution (optional) — only if MonitorSetting has Width/Height
+/// 3. Per-monitor DPI (optional) — only if MonitorSetting has ScalePercent > 0
+/// Each axis is fully independent and only fires if explicitly configured.
 /// </summary>
 public sealed class ProfileApplyService
 {
     private readonly DisplayService _displayService;
     private readonly ScalingService _scalingService;
+    private readonly TopologyService _topologyService;
 
     public event Action<string>? StatusChanged;
 
-    public ProfileApplyService(DisplayService displayService, ScalingService scalingService)
+    public ProfileApplyService(DisplayService displayService, ScalingService scalingService, TopologyService topologyService)
     {
         _displayService = displayService;
         _scalingService = scalingService;
+        _topologyService = topologyService;
     }
 
-    public ApplyResult Apply(ResolutionProfile profile)
+    public ApplyResult Apply(CompositeProfile profile)
     {
-        var monitors = _displayService.GetMonitors();
-        var monitor = FindMonitor(monitors, profile);
-        if (monitor == null)
+        var messages = new List<string>();
+        bool anyFailure = false;
+
+        // Step 1: Topology (only if set)
+        if (profile.Topology.HasValue)
         {
-            System.Diagnostics.Debug.WriteLine(
-                $"[Apply] Monitor not found: profile.DeviceName='{profile.DeviceName}', " +
-                $"profile.MonitorName='{profile.MonitorName}', available=[{string.Join(", ", monitors.Select(m => $"{m.DeviceName}={m.FriendlyName}"))}]");
-            return new ApplyResult(false, $"Monitor '{profile.DeviceName}' not found.");
-        }
+            StatusChanged?.Invoke($"Switching topology to {profile.Topology.Value}…");
+            var topoResult = _topologyService.SetTopology(profile.Topology.Value);
+            System.Diagnostics.Debug.WriteLine($"[Apply] Topology: {topoResult.Message}");
 
-        // Use the actual device name (may differ from profile if device was re-mapped)
-        string deviceName = monitor.DeviceName;
-
-        var currentMode = _displayService.GetCurrentMode(deviceName);
-        if (currentMode == null)
-            return new ApplyResult(false, "Could not read current display mode.");
-
-        int currentScale = _scalingService.GetCurrentScale(monitor);
-
-        var targetMode = profile.Mode;
-        bool resolutionMatch = currentMode.Width == targetMode.Width
-                            && currentMode.Height == targetMode.Height
-                            && currentMode.RefreshRate == targetMode.RefreshRate;
-        bool scaleMatch = targetMode.ScalePercent <= 0 || currentScale == targetMode.ScalePercent;
-
-        System.Diagnostics.Debug.WriteLine(
-            $"[Apply] device={deviceName} current={currentMode} scale={currentScale}% → target={targetMode} " +
-            $"resMatch={resolutionMatch} scaleMatch={scaleMatch}");
-
-        if (resolutionMatch && scaleMatch)
-        {
-            StatusChanged?.Invoke($"Already at {targetMode}");
-            return new ApplyResult(true, "Already at requested settings.");
-        }
-
-        // Apply resolution if needed
-        if (!resolutionMatch)
-        {
-            StatusChanged?.Invoke($"Switching resolution to {targetMode.Width}×{targetMode.Height}@{targetMode.RefreshRate}Hz…");
-            var resResult = _displayService.ApplyResolution(deviceName, targetMode);
-            System.Diagnostics.Debug.WriteLine($"[Apply] Resolution change result: {resResult}");
-            if (resResult != DisplayChangeResult.Success)
-                return new ApplyResult(false, $"Resolution change failed: {resResult}");
-        }
-
-        // Apply scale if needed
-        if (!scaleMatch && targetMode.ScalePercent > 0)
-        {
-            StatusChanged?.Invoke($"Setting scale to {targetMode.ScalePercent}%…");
-
-            // Re-fetch monitor info (LUID may change after resolution switch)
-            if (!resolutionMatch)
+            if (!topoResult.Success)
             {
-                monitors = _displayService.GetMonitors();
-                monitor = FindMonitor(monitors, profile);
-                if (monitor == null)
-                    return new ApplyResult(true, "Resolution changed but could not find monitor for scale change.");
-                deviceName = monitor.DeviceName;
+                messages.Add($"Topology: {topoResult.Message}");
+                anyFailure = true;
             }
-
-            bool scaleOk = _scalingService.SetScale(monitor, targetMode.ScalePercent);
-            System.Diagnostics.Debug.WriteLine($"[Apply] Scale set to {targetMode.ScalePercent}%: {(scaleOk ? "OK" : "FAILED")}");
-            if (!scaleOk)
-                return new ApplyResult(!resolutionMatch,
-                    resolutionMatch ? "Scale change failed." : "Resolution changed but scale change failed.");
+            else
+            {
+                messages.Add($"Topology → {profile.Topology.Value}");
+                // Brief delay to let OS settle after topology change
+                Thread.Sleep(500);
+            }
         }
 
-        StatusChanged?.Invoke($"Applied: {targetMode}");
-        return new ApplyResult(true, $"Applied: {targetMode}");
+        // Step 2: Per-monitor settings (only entries that have changes)
+        if (profile.MonitorSettings.Count > 0)
+        {
+            // Re-enumerate monitors (topology change may have altered mappings)
+            var monitors = _displayService.GetMonitors();
+
+            foreach (var ms in profile.MonitorSettings)
+            {
+                if (!ms.HasAnyChange) continue;
+
+                var monitor = FindMonitor(monitors, ms);
+                if (monitor == null)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[Apply] Monitor not found: device='{ms.DeviceName}', name='{ms.MonitorName}', " +
+                        $"available=[{string.Join(", ", monitors.Select(m => $"{m.DeviceName}={m.FriendlyName}"))}]");
+                    messages.Add($"{ms.MonitorName}: not found");
+                    anyFailure = true;
+                    continue;
+                }
+
+                string deviceName = monitor.DeviceName;
+
+                // Apply resolution if configured
+                if (ms.HasResolution)
+                {
+                    StatusChanged?.Invoke($"Setting {monitor.FriendlyName} to {ms.Width}×{ms.Height}…");
+                    var mode = new DisplayMode(
+                        ms.Width!.Value, ms.Height!.Value,
+                        ms.RefreshRate ?? 60,
+                        0, // scale handled separately
+                        ms.BitsPerPixel ?? 32);
+
+                    var resResult = _displayService.ApplyResolution(deviceName, mode);
+                    System.Diagnostics.Debug.WriteLine($"[Apply] Resolution on {deviceName}: {resResult}");
+
+                    if (resResult != DisplayChangeResult.Success)
+                    {
+                        messages.Add($"{monitor.FriendlyName}: resolution failed ({resResult})");
+                        anyFailure = true;
+                    }
+                    else
+                    {
+                        messages.Add($"{monitor.FriendlyName}: {ms.Width}×{ms.Height}@{ms.RefreshRate ?? 60}Hz");
+                    }
+                }
+
+                // Apply DPI if configured
+                if (ms.HasScale)
+                {
+                    StatusChanged?.Invoke($"Setting {monitor.FriendlyName} DPI to {ms.ScalePercent}%…");
+
+                    // Re-fetch monitor info if resolution was just changed (LUID may shift)
+                    if (ms.HasResolution)
+                    {
+                        monitors = _displayService.GetMonitors();
+                        monitor = FindMonitor(monitors, ms);
+                        if (monitor == null)
+                        {
+                            messages.Add($"{ms.MonitorName}: lost after resolution change");
+                            anyFailure = true;
+                            continue;
+                        }
+                    }
+
+                    bool scaleOk = _scalingService.SetScale(monitor, ms.ScalePercent!.Value);
+                    System.Diagnostics.Debug.WriteLine($"[Apply] Scale on {monitor.DeviceName} to {ms.ScalePercent}%: {(scaleOk ? "OK" : "FAILED")}");
+
+                    if (!scaleOk)
+                    {
+                        messages.Add($"{monitor.FriendlyName}: DPI change failed");
+                        anyFailure = true;
+                    }
+                    else
+                    {
+                        messages.Add($"{monitor.FriendlyName}: {ms.ScalePercent}%");
+                    }
+                }
+            }
+        }
+
+        var summary = messages.Count > 0 ? string.Join("; ", messages) : "No changes applied.";
+        StatusChanged?.Invoke(summary);
+        return new ApplyResult(!anyFailure, summary);
     }
 
     /// <summary>
-    /// Find a monitor matching a profile. Tries exact DeviceName first, then
-    /// falls back to FriendlyName match, then single-monitor fallback.
-    /// This handles Windows reassigning device names (e.g. DISPLAY1→DISPLAY2)
-    /// after reboots or monitor reconnections.
+    /// Find a monitor matching a MonitorSetting. Tries exact DeviceName first,
+    /// then falls back to FriendlyName match, then single-monitor fallback.
     /// </summary>
-    private static MonitorInfo? FindMonitor(List<MonitorInfo> monitors, ResolutionProfile profile)
+    private static MonitorInfo? FindMonitor(List<MonitorInfo> monitors, MonitorSetting setting)
     {
         // Exact device name match
-        var monitor = monitors.FirstOrDefault(m => m.DeviceName == profile.DeviceName);
+        var monitor = monitors.FirstOrDefault(m => m.DeviceName == setting.DeviceName);
         if (monitor != null) return monitor;
 
-        // Match by friendly name (e.g. "BMD HDMI")
-        if (!string.IsNullOrEmpty(profile.MonitorName))
+        // Match by friendly name
+        if (!string.IsNullOrEmpty(setting.MonitorName))
         {
             monitor = monitors.FirstOrDefault(m =>
-                m.FriendlyName.Equals(profile.MonitorName, StringComparison.OrdinalIgnoreCase));
+                m.FriendlyName.Equals(setting.MonitorName, StringComparison.OrdinalIgnoreCase));
             if (monitor != null)
             {
                 System.Diagnostics.Debug.WriteLine(
-                    $"[Apply] Remapped '{profile.DeviceName}' → '{monitor.DeviceName}' via friendly name '{profile.MonitorName}'");
+                    $"[Apply] Remapped '{setting.DeviceName}' → '{monitor.DeviceName}' via friendly name '{setting.MonitorName}'");
                 return monitor;
             }
         }
@@ -123,7 +162,7 @@ public sealed class ProfileApplyService
         if (monitors.Count == 1)
         {
             System.Diagnostics.Debug.WriteLine(
-                $"[Apply] Single-monitor fallback: '{profile.DeviceName}' → '{monitors[0].DeviceName}'");
+                $"[Apply] Single-monitor fallback: '{setting.DeviceName}' → '{monitors[0].DeviceName}'");
             return monitors[0];
         }
 

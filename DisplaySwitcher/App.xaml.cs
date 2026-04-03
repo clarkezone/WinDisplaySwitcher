@@ -13,6 +13,7 @@ public partial class App : Application
     private SettingsService _settingsService = null!;
     private DisplayService _displayService = null!;
     private ScalingService _scalingService = null!;
+    private TopologyService _topologyService = null!;
     private ProfileApplyService _profileApplyService = null!;
     private TrayIconService _trayIconService = null!;
     private HotkeyService _hotkeyService = null!;
@@ -29,7 +30,8 @@ public partial class App : Application
 
         _displayService = new DisplayService();
         _scalingService = new ScalingService();
-        _profileApplyService = new ProfileApplyService(_displayService, _scalingService);
+        _topologyService = new TopologyService();
+        _profileApplyService = new ProfileApplyService(_displayService, _scalingService, _topologyService);
 
         _trayIconService = new TrayIconService(_settingsService, _profileApplyService);
         _trayIconService.Initialize();

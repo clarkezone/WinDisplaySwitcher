@@ -22,117 +22,189 @@ public sealed partial class SettingsWindow : Window
     {
         this.InitializeComponent();
 
-        // Set a smaller default window size
         if (AppWindow != null)
-        {
-            AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 480));
-        }
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(640, 600));
 
         _viewModel = new SettingsViewModel(
             settingsService, displayService, scalingService, hotkeyService, trayIconService);
 
         ProfileList.ItemsSource = _viewModel.Profiles;
-        MonitorCombo.ItemsSource = _viewModel.Monitors;
         AutoStartToggle.IsOn = _viewModel.AutoStartEnabled;
 
+        // Populate topology combo
+        TopologyCombo.ItemsSource = _viewModel.TopologyOptions;
+        TopologyCombo.SelectedIndex = 0;
+
         AddProfileBtn.Click += OnAddProfileClick;
-        MonitorCombo.SelectionChanged += OnMonitorSelectionChanged;
         ConfirmAddBtn.Click += OnConfirmAddClick;
         CancelAddBtn.Click += OnCancelAddClick;
         AutoStartToggle.Toggled += OnAutoStartToggled;
 
         if (this.Content is UIElement rootElement)
-        {
             rootElement.PreviewKeyDown += OnPreviewKeyDown;
-        }
     }
 
     private void OnAddProfileClick(object sender, RoutedEventArgs e)
     {
-        _viewModel.EditingItem = null;
+        _viewModel.StartAddProfileCommand.Execute(null);
         AddPanel.Visibility = Visibility.Visible;
         ConfirmAddBtn.Content = "Add";
-        _viewModel.StartAddProfileCommand.Execute(null);
-        MonitorCombo.ItemsSource = _viewModel.Monitors;
-        if (_viewModel.SelectedMonitor != null)
-            MonitorCombo.SelectedItem = _viewModel.SelectedMonitor;
+        ProfileNameBox.Text = string.Empty;
+        TopologyCombo.SelectedIndex = 0;
+        MonitorEntriesPanel.Children.Clear();
     }
 
     private void OnEditClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.Tag is not ProfileItem item) return;
 
-        _viewModel.EditingItem = item;
+        _viewModel.PopulateEditPanel(item);
         AddPanel.Visibility = Visibility.Visible;
         ConfirmAddBtn.Content = "Save";
-        _viewModel.StartAddProfileCommand.Execute(null);
-        MonitorCombo.ItemsSource = _viewModel.Monitors;
+        ProfileNameBox.Text = _viewModel.ProfileName;
+        TopologyCombo.SelectedItem = _viewModel.SelectedTopology;
 
-        // Pre-select the monitor
-        foreach (var mon in _viewModel.Monitors)
-        {
-            if (mon.DeviceName == item.Profile.DeviceName)
-            {
-                MonitorCombo.SelectedItem = mon;
-                break;
-            }
-        }
-
-        // Pre-select resolution (mode list populated by monitor selection)
-        foreach (var mode in _viewModel.AvailableModes)
-        {
-            if (mode.ResolutionEquals(item.Profile.Mode))
-            {
-                ResolutionCombo.SelectedItem = mode;
-                break;
-            }
-        }
-
-        // Pre-select scale
-        ScaleCombo.SelectedItem = item.Profile.Mode.ScalePercent;
+        // Rebuild monitor entry UI rows
+        MonitorEntriesPanel.Children.Clear();
+        foreach (var entry in _viewModel.MonitorEntries)
+            AddMonitorEntryRow(entry);
     }
 
-    private void OnMonitorSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void OnAddMonitorEntry(object sender, RoutedEventArgs e)
     {
-        if (MonitorCombo.SelectedItem is MonitorInfo monitor)
-        {
-            _viewModel.SelectedMonitor = monitor;
-            ResolutionCombo.ItemsSource = _viewModel.AvailableModes;
-            ScaleCombo.ItemsSource = _viewModel.AvailableScales;
+        _viewModel.AddMonitorEntryCommand.Execute(null);
+        if (_viewModel.MonitorEntries.Count > 0)
+            AddMonitorEntryRow(_viewModel.MonitorEntries[^1]);
+    }
 
-            if (_viewModel.SelectedMode != null)
-                ResolutionCombo.SelectedItem = _viewModel.SelectedMode;
-            if (_viewModel.AvailableScales.Count > 0)
-                ScaleCombo.SelectedItem = _viewModel.SelectedScale;
+    private void AddMonitorEntryRow(MonitorSettingEntry entry)
+    {
+        var panel = new StackPanel { Spacing = 4, Padding = new Thickness(8), BorderThickness = new Thickness(1), BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Gray), CornerRadius = new CornerRadius(4) };
+
+        // Monitor picker
+        var monitorCombo = new ComboBox { Header = "Monitor", HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var mon in _viewModel.Monitors)
+            monitorCombo.Items.Add(mon);
+        if (entry.SelectedMonitor != null)
+            monitorCombo.SelectedItem = entry.SelectedMonitor;
+
+        // Resolution combo — "Don't change" + available modes
+        var resCombo = new ComboBox { Header = "Resolution", HorizontalAlignment = HorizontalAlignment.Stretch };
+        resCombo.Items.Add("Don't change");
+        resCombo.SelectedIndex = 0;
+
+        // Scale combo — "Don't change" + available scales
+        var scaleCombo = new ComboBox { Header = "Scale %", HorizontalAlignment = HorizontalAlignment.Stretch };
+        scaleCombo.Items.Add("Don't change");
+        scaleCombo.SelectedIndex = 0;
+
+        // When monitor changes, repopulate resolution/scale combos
+        monitorCombo.SelectionChanged += (s, args) =>
+        {
+            if (monitorCombo.SelectedItem is not MonitorInfo mon) return;
+            entry.SelectedMonitor = mon;
+
+            resCombo.Items.Clear();
+            resCombo.Items.Add("Don't change");
+            foreach (var mode in _viewModel.GetSupportedModes(mon))
+                resCombo.Items.Add(mode);
+            resCombo.SelectedIndex = 0;
+
+            scaleCombo.Items.Clear();
+            scaleCombo.Items.Add("Don't change");
+            foreach (var scale in _viewModel.GetSupportedScales(mon))
+                scaleCombo.Items.Add(scale);
+            scaleCombo.SelectedIndex = 0;
+
+            // Apply pending selections if editing
+            ApplyPendingSelections(entry, resCombo, scaleCombo);
+        };
+
+        resCombo.SelectionChanged += (s, args) =>
+        {
+            entry.SelectedMode = resCombo.SelectedItem is DisplayMode m ? m : null;
+        };
+
+        scaleCombo.SelectionChanged += (s, args) =>
+        {
+            entry.SelectedScale = scaleCombo.SelectedItem is int sc ? sc : 0;
+        };
+
+        // Remove button
+        var removeBtn = new Button { Content = "Remove Monitor" };
+        removeBtn.Click += (s, args) =>
+        {
+            _viewModel.RemoveMonitorEntry(entry);
+            MonitorEntriesPanel.Children.Remove(panel);
+        };
+
+        panel.Children.Add(monitorCombo);
+        panel.Children.Add(resCombo);
+        panel.Children.Add(scaleCombo);
+        panel.Children.Add(removeBtn);
+        MonitorEntriesPanel.Children.Add(panel);
+
+        // If monitor was pre-selected (editing), trigger population
+        if (entry.SelectedMonitor != null)
+        {
+            monitorCombo.SelectedItem = entry.SelectedMonitor;
+        }
+    }
+
+    private void ApplyPendingSelections(MonitorSettingEntry entry, ComboBox resCombo, ComboBox scaleCombo)
+    {
+        if (entry.PendingWidth != null && entry.PendingHeight != null)
+        {
+            foreach (var item in resCombo.Items)
+            {
+                if (item is DisplayMode mode &&
+                    mode.Width == entry.PendingWidth &&
+                    mode.Height == entry.PendingHeight &&
+                    (entry.PendingRefreshRate == null || mode.RefreshRate == entry.PendingRefreshRate))
+                {
+                    resCombo.SelectedItem = mode;
+                    break;
+                }
+            }
+            entry.PendingWidth = null;
+            entry.PendingHeight = null;
+            entry.PendingRefreshRate = null;
+        }
+
+        if (entry.PendingScale > 0)
+        {
+            foreach (var item in scaleCombo.Items)
+            {
+                if (item is int scale && scale == entry.PendingScale)
+                {
+                    scaleCombo.SelectedItem = scale;
+                    break;
+                }
+            }
+            entry.PendingScale = 0;
         }
     }
 
     private void OnConfirmAddClick(object sender, RoutedEventArgs e)
     {
-        if (ResolutionCombo.SelectedItem is DisplayMode mode)
-            _viewModel.SelectedMode = mode;
-        if (ScaleCombo.SelectedItem is int scale)
-            _viewModel.SelectedScale = scale;
-
+        _viewModel.ProfileName = ProfileNameBox.Text;
+        _viewModel.SelectedTopology = TopologyCombo.SelectedItem as TopologyOption;
         _viewModel.ConfirmAddProfileCommand.Execute(null);
         AddPanel.Visibility = Visibility.Collapsed;
-        ConfirmAddBtn.Content = "Add";
+        MonitorEntriesPanel.Children.Clear();
     }
 
     private void OnCancelAddClick(object sender, RoutedEventArgs e)
     {
-        _viewModel.EditingItem = null;
         _viewModel.CancelAddProfileCommand.Execute(null);
         AddPanel.Visibility = Visibility.Collapsed;
-        ConfirmAddBtn.Content = "Add";
+        MonitorEntriesPanel.Children.Clear();
     }
 
     private void OnRemoveClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button btn && btn.Tag is ProfileItem item)
-        {
             _viewModel.RemoveProfileCommand.Execute(item);
-        }
     }
 
     private void OnSetHotkeyClick(object sender, RoutedEventArgs e)
@@ -148,9 +220,7 @@ public sealed partial class SettingsWindow : Window
     private void OnClearHotkeyClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button btn && btn.Tag is ProfileItem item)
-        {
             _viewModel.ClearHotkey(item);
-        }
     }
 
     private void OnPreviewKeyDown(object sender, KeyRoutedEventArgs e)
@@ -158,15 +228,12 @@ public sealed partial class SettingsWindow : Window
         if (!_capturingHotkey || _hotkeyTarget == null) return;
 
         var key = e.Key;
-
         if (key == Windows.System.VirtualKey.Control ||
             key == Windows.System.VirtualKey.Shift ||
             key == Windows.System.VirtualKey.Menu ||
             key == Windows.System.VirtualKey.LeftWindows ||
             key == Windows.System.VirtualKey.RightWindows)
-        {
             return;
-        }
 
         int modifiers = 0;
         var state = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control);
@@ -184,7 +251,6 @@ public sealed partial class SettingsWindow : Window
         _viewModel.UpdateHotkey(_hotkeyTarget, modifiers, (int)key);
         _capturingHotkey = false;
         _hotkeyTarget = null;
-
         e.Handled = true;
     }
 

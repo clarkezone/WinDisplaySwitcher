@@ -31,7 +31,7 @@ public sealed class TrayIconService : IDisposable
     private NativeMethods.WndProc? _wndProcDelegate; // prevent GC
     private readonly SettingsService _settingsService;
     private readonly ProfileApplyService _profileApplyService;
-    private List<ResolutionProfile> _menuProfiles = new();
+    private List<CompositeProfile> _menuProfiles = new();
 
     public event Action? SettingsRequested;
     public event Action? ExitRequested;
@@ -84,25 +84,15 @@ public sealed class TrayIconService : IDisposable
         {
             _menuProfiles = _settingsService.Settings.Profiles;
 
-            // Group profiles by monitor
-            var grouped = _menuProfiles
-                .Select((p, i) => (Profile: p, Index: i))
-                .GroupBy(x => x.Profile.MonitorName);
-
-            foreach (var group in grouped)
+            // Group profiles by name or topology
+            foreach (var (profile, index) in _menuProfiles.Select((p, i) => (p, i)))
             {
-                // Add monitor header as sub-menu or separator with label
-                NativeMethods.AppendMenuW(hMenu, MF_SEPARATOR, 0, null);
+                string label = profile.DisplayLabel;
+                if (profile.HasHotkey)
+                    label += $"  ({profile.HotkeyDisplayString})";
 
-                foreach (var item in group)
-                {
-                    string label = item.Profile.DisplayLabel;
-                    if (item.Profile.HasHotkey)
-                        label += $"  ({item.Profile.HotkeyDisplayString})";
-
-                    NativeMethods.AppendMenuW(hMenu, MF_STRING,
-                        (uint)(MENU_ID_PROFILE_BASE + item.Index), label);
-                }
+                NativeMethods.AppendMenuW(hMenu, MF_STRING,
+                    (uint)(MENU_ID_PROFILE_BASE + index), label);
             }
 
             NativeMethods.AppendMenuW(hMenu, MF_SEPARATOR, 0, null);

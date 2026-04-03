@@ -17,7 +17,7 @@ public sealed class HotkeyService : IDisposable
 {
     private readonly SettingsService _settingsService;
     private readonly ProfileApplyService _profileApplyService;
-    private readonly Dictionary<int, ResolutionProfile> _registeredHotkeys = new();
+    private readonly Dictionary<int, CompositeProfile> _registeredHotkeys = new();
     private int _nextId = 1;
     private Thread? _thread;
     private uint _threadId;
