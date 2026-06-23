@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml.Input;
 public sealed partial class SettingsWindow : Window
 {
     private readonly SettingsViewModel _viewModel;
+    private readonly DisplayService _displayService;
     private ProfileItem? _hotkeyTarget;
     private bool _capturingHotkey;
 
@@ -24,6 +25,8 @@ public sealed partial class SettingsWindow : Window
 
         if (AppWindow != null)
             AppWindow.Resize(new Windows.Graphics.SizeInt32(640, 600));
+
+        _displayService = displayService;
 
         _viewModel = new SettingsViewModel(
             settingsService, displayService, scalingService, hotkeyService, trayIconService);
@@ -85,8 +88,6 @@ public sealed partial class SettingsWindow : Window
         var monitorCombo = new ComboBox { Header = "Monitor", HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var mon in _viewModel.Monitors)
             monitorCombo.Items.Add(mon);
-        if (entry.SelectedMonitor != null)
-            monitorCombo.SelectedItem = entry.SelectedMonitor;
 
         // Resolution combo — "Don't change" + available modes
         var resCombo = new ComboBox { Header = "Resolution", HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -144,7 +145,8 @@ public sealed partial class SettingsWindow : Window
         panel.Children.Add(removeBtn);
         MonitorEntriesPanel.Children.Add(panel);
 
-        // If monitor was pre-selected (editing), trigger population
+        // Set monitor selection AFTER handler is attached so SelectionChanged fires
+        // and populates the resolution/scale combos
         if (entry.SelectedMonitor != null)
         {
             monitorCombo.SelectedItem = entry.SelectedMonitor;
@@ -258,5 +260,10 @@ public sealed partial class SettingsWindow : Window
     {
         _viewModel.AutoStartEnabled = AutoStartToggle.IsOn;
         _viewModel.ToggleAutoStartCommand.Execute(null);
+    }
+
+    private void OnIdentifyMonitors(object sender, RoutedEventArgs e)
+    {
+        IdentifyOverlay.Show(_displayService);
     }
 }

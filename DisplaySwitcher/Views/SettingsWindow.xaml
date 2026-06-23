@@ -52,6 +52,8 @@
                 <TextBlock Text="Each monitor entry is optional. Leave resolution/scale as 'Don't change' to skip."
                            Foreground="Gray" TextWrapping="Wrap"/>
 
+                <Button x:Name="IdentifyMonitorsBtn" Content="Identify Monitors" Click="OnIdentifyMonitors" Margin="0,4,0,0"/>
+
                 <!-- Per-monitor entries container -->
                 <StackPanel x:Name="MonitorEntriesPanel" Spacing="12"/>
 

@@ -168,6 +168,20 @@ public sealed class DisplayService
     }
 
     /// <summary>
+    /// Get the screen bounds (position and size in virtual screen coordinates) for a monitor.
+    /// </summary>
+    public (int X, int Y, int Width, int Height)? GetMonitorBounds(string deviceName)
+    {
+        var devMode = new NativeMethods.DEVMODE();
+        devMode.dmSize = (short)Marshal.SizeOf<NativeMethods.DEVMODE>();
+
+        if (!NativeMethods.EnumDisplaySettingsExW(deviceName, NativeMethods.ENUM_CURRENT_SETTINGS, ref devMode, 0))
+            return null;
+
+        return (devMode.dmPositionX, devMode.dmPositionY, devMode.dmPelsWidth, devMode.dmPelsHeight);
+    }
+
+    /// <summary>
     /// Apply a resolution (width, height, refresh rate) to the specified monitor.
     /// Does NOT change DPI scaling — use ScalingService for that.
     /// </summary>
