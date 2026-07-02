@@ -6,6 +6,7 @@ using System.Text.Json;
 
 /// <summary>
 /// Loads and saves application settings from JSON in %APPDATA%\DisplaySwitcher.
+/// Automatically migrates legacy single-monitor profiles on load.
 /// </summary>
 public sealed class SettingsService
 {
@@ -16,6 +17,7 @@ public sealed class SettingsService
     {
         WriteIndented = true,
         PropertyNameCaseInsensitive = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
     };
 
     private readonly object _lock = new();
@@ -37,6 +39,17 @@ public sealed class SettingsService
                 if (File.Exists(SettingsFile))
                 {
                     var json = File.ReadAllText(SettingsFile);
+
+                    // Try legacy migration first
+                    var migrated = AppSettings.MigrateFromLegacy(json);
+                    if (migrated != null)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[Settings] Migrated legacy format to composite profiles.");
+                        _cached = migrated;
+                        Save(_cached); // Persist the migrated format
+                        return migrated;
+                    }
+
                     var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
                     if (settings != null)
                     {
@@ -69,7 +82,7 @@ public sealed class SettingsService
         }
     }
 
-    public void AddProfile(ResolutionProfile profile)
+    public void AddProfile(CompositeProfile profile)
     {
         _cached.Profiles.Add(profile);
         Save();
@@ -81,7 +94,7 @@ public sealed class SettingsService
         Save();
     }
 
-    public void UpdateProfile(ResolutionProfile profile)
+    public void UpdateProfile(CompositeProfile profile)
     {
         var idx = _cached.Profiles.FindIndex(p => p.Id == profile.Id);
         if (idx >= 0)

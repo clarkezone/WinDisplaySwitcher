@@ -16,17 +16,22 @@ public partial class SettingsViewModel : ObservableObject
 
     public ObservableCollection<ProfileItem> Profiles { get; } = new();
     public ObservableCollection<MonitorInfo> Monitors { get; } = new();
-    public ObservableCollection<DisplayMode> AvailableModes { get; } = new();
-    public ObservableCollection<int> AvailableScales { get; } = new();
+
+    // Topology options for the combo box (null = "Don't change")
+    public ObservableCollection<TopologyOption> TopologyOptions { get; } = new()
+    {
+        new TopologyOption(null, "Don't change"),
+        new TopologyOption(TopologyMode.Extend, "Extend"),
+        new TopologyOption(TopologyMode.Clone, "Clone"),
+        new TopologyOption(TopologyMode.InternalOnly, "Internal only (show on 1)"),
+        new TopologyOption(TopologyMode.ExternalOnly, "External only (show on 2)"),
+    };
 
     [ObservableProperty]
-    private MonitorInfo? _selectedMonitor;
+    private TopologyOption? _selectedTopology;
 
     [ObservableProperty]
-    private DisplayMode? _selectedMode;
-
-    [ObservableProperty]
-    private int _selectedScale = 100;
+    private string _profileName = string.Empty;
 
     [ObservableProperty]
     private bool _autoStartEnabled;
@@ -34,9 +39,10 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool _isAddingProfile;
 
-    /// <summary>
-    /// When non-null, the add panel is in "edit" mode for this item.
-    /// </summary>
+    /// <summary>Per-monitor entries in the add/edit panel.</summary>
+    public ObservableCollection<MonitorSettingEntry> MonitorEntries { get; } = new();
+
+    /// <summary>When non-null, the add panel is in "edit" mode for this item.</summary>
     public ProfileItem? EditingItem { get; set; }
 
     public SettingsViewModel(
@@ -57,7 +63,6 @@ public partial class SettingsViewModel : ObservableObject
 
     private void LoadData()
     {
-        // Load monitors
         Monitors.Clear();
         var monitors = _displayService.GetMonitors();
         foreach (var mon in monitors)
@@ -66,87 +71,101 @@ public partial class SettingsViewModel : ObservableObject
             Monitors.Add(mon);
         }
 
-        // Load existing profiles
         Profiles.Clear();
         foreach (var profile in _settingsService.Settings.Profiles)
-        {
             Profiles.Add(new ProfileItem(profile));
-        }
 
-        // Auto-start
         var autoStartService = new AutoStartService();
         AutoStartEnabled = autoStartService.IsEnabled();
     }
 
-    partial void OnSelectedMonitorChanged(MonitorInfo? value)
-    {
-        AvailableModes.Clear();
-        AvailableScales.Clear();
+    /// <summary>Get supported display modes for a monitor.</summary>
+    public List<DisplayMode> GetSupportedModes(MonitorInfo monitor) =>
+        _displayService.GetSupportedModes(monitor.DeviceName);
 
-        if (value == null) return;
-
-        var modes = _displayService.GetSupportedModes(value.DeviceName);
-        foreach (var mode in modes)
-            AvailableModes.Add(mode);
-
-        if (AvailableModes.Count > 0)
-            SelectedMode = AvailableModes[0];
-
-        var scales = _scalingService.GetSupportedScales(value);
-        foreach (var scale in scales)
-            AvailableScales.Add(scale);
-
-        if (AvailableScales.Count > 0)
-            SelectedScale = value.RecommendedScalePercent;
-    }
+    /// <summary>Get supported DPI scales for a monitor.</summary>
+    public int[] GetSupportedScales(MonitorInfo monitor) =>
+        _scalingService.GetSupportedScales(monitor);
 
     [RelayCommand]
     private void StartAddProfile()
     {
         IsAddingProfile = true;
-        if (Monitors.Count > 0 && SelectedMonitor == null)
-            SelectedMonitor = Monitors[0];
+        ProfileName = string.Empty;
+        SelectedTopology = TopologyOptions[0]; // "Don't change"
+        MonitorEntries.Clear();
     }
 
     [RelayCommand]
     private void CancelAddProfile()
     {
         IsAddingProfile = false;
+        EditingItem = null;
+        MonitorEntries.Clear();
+    }
+
+    [RelayCommand]
+    private void AddMonitorEntry()
+    {
+        if (Monitors.Count == 0) return;
+        MonitorEntries.Add(new MonitorSettingEntry());
+    }
+
+    public void RemoveMonitorEntry(MonitorSettingEntry entry)
+    {
+        MonitorEntries.Remove(entry);
     }
 
     [RelayCommand]
     private void ConfirmAddProfile()
     {
-        if (SelectedMonitor == null || SelectedMode == null) return;
+        var profile = EditingItem?.Profile ?? new CompositeProfile();
+        profile.Name = ProfileName;
+        profile.Topology = SelectedTopology?.Mode;
 
-        var newMode = new DisplayMode(
-            SelectedMode.Width, SelectedMode.Height,
-            SelectedMode.RefreshRate, SelectedScale,
-            SelectedMode.BitsPerPixel);
+        profile.MonitorSettings.Clear();
+        foreach (var entry in MonitorEntries)
+        {
+            if (entry.SelectedMonitor == null) continue;
+
+            var ms = new MonitorSetting
+            {
+                DeviceName = entry.SelectedMonitor.DeviceName,
+                MonitorName = entry.SelectedMonitor.FriendlyName,
+            };
+
+            // Resolution — only if user selected something other than "Don't change"
+            if (entry.SelectedMode != null)
+            {
+                ms.Width = entry.SelectedMode.Width;
+                ms.Height = entry.SelectedMode.Height;
+                ms.RefreshRate = entry.SelectedMode.RefreshRate;
+                ms.BitsPerPixel = entry.SelectedMode.BitsPerPixel;
+            }
+
+            // DPI — only if user selected something other than "Don't change" (0)
+            if (entry.SelectedScale > 0)
+            {
+                ms.ScalePercent = entry.SelectedScale;
+            }
+
+            profile.MonitorSettings.Add(ms);
+        }
 
         if (EditingItem != null)
         {
-            // Update the existing profile in-place (preserves hotkey assignment)
-            EditingItem.Profile.DeviceName = SelectedMonitor.DeviceName;
-            EditingItem.Profile.MonitorName = SelectedMonitor.FriendlyName;
-            EditingItem.Profile.Mode = newMode;
-            EditingItem.DisplayLabel = EditingItem.Profile.DisplayLabel;
+            _settingsService.UpdateProfile(profile);
+            EditingItem.Refresh();
             EditingItem = null;
         }
         else
         {
-            var profile = new ResolutionProfile
-            {
-                DeviceName = SelectedMonitor.DeviceName,
-                MonitorName = SelectedMonitor.FriendlyName,
-                Mode = newMode
-            };
-
             _settingsService.AddProfile(profile);
             Profiles.Add(new ProfileItem(profile));
         }
 
         IsAddingProfile = false;
+        MonitorEntries.Clear();
         SaveAndRefresh();
     }
 
@@ -154,10 +173,8 @@ public partial class SettingsViewModel : ObservableObject
     private void RemoveProfile(ProfileItem? item)
     {
         if (item == null) return;
-
         _settingsService.RemoveProfile(item.Profile.Id);
         Profiles.Remove(item);
-
         SaveAndRefresh();
     }
 
@@ -166,7 +183,6 @@ public partial class SettingsViewModel : ObservableObject
         item.Profile.HotkeyModifiers = modifiers;
         item.Profile.HotkeyVk = vk;
         item.RefreshHotkeyDisplay();
-
         SaveAndRefresh();
     }
 
@@ -175,8 +191,35 @@ public partial class SettingsViewModel : ObservableObject
         item.Profile.HotkeyModifiers = 0;
         item.Profile.HotkeyVk = 0;
         item.RefreshHotkeyDisplay();
-
         SaveAndRefresh();
+    }
+
+    /// <summary>Populate the edit panel from an existing profile.</summary>
+    public void PopulateEditPanel(ProfileItem item)
+    {
+        EditingItem = item;
+        var profile = item.Profile;
+
+        ProfileName = profile.Name;
+        SelectedTopology = TopologyOptions.FirstOrDefault(t => t.Mode == profile.Topology) ?? TopologyOptions[0];
+
+        MonitorEntries.Clear();
+        foreach (var ms in profile.MonitorSettings)
+        {
+            var entry = new MonitorSettingEntry
+            {
+                SelectedMonitor = Monitors.FirstOrDefault(m => m.DeviceName == ms.DeviceName)
+                    ?? Monitors.FirstOrDefault(m => m.FriendlyName.Equals(ms.MonitorName, StringComparison.OrdinalIgnoreCase)),
+            };
+
+            // Defer mode/scale selection — will be set by the View after monitor combo populates
+            entry.PendingWidth = ms.Width;
+            entry.PendingHeight = ms.Height;
+            entry.PendingRefreshRate = ms.RefreshRate;
+            entry.PendingScale = ms.ScalePercent ?? 0;
+
+            MonitorEntries.Add(entry);
+        }
     }
 
     [RelayCommand]
@@ -197,12 +240,18 @@ public partial class SettingsViewModel : ObservableObject
     }
 }
 
+/// <summary>Wraps a TopologyMode? for combo box display.</summary>
+public record TopologyOption(TopologyMode? Mode, string DisplayName)
+{
+    public override string ToString() => DisplayName;
+}
+
 /// <summary>
-/// Observable wrapper around ResolutionProfile for the settings UI.
+/// Observable wrapper around CompositeProfile for the settings UI.
 /// </summary>
 public partial class ProfileItem : ObservableObject
 {
-    public ResolutionProfile Profile { get; }
+    public CompositeProfile Profile { get; }
 
     [ObservableProperty]
     private string _displayLabel = string.Empty;
@@ -210,15 +259,41 @@ public partial class ProfileItem : ObservableObject
     [ObservableProperty]
     private string _hotkeyDisplay = "None";
 
-    public ProfileItem(ResolutionProfile profile)
+    public ProfileItem(CompositeProfile profile)
     {
         Profile = profile;
         DisplayLabel = profile.DisplayLabel;
         HotkeyDisplay = profile.HotkeyDisplayString;
     }
 
-    public void RefreshHotkeyDisplay()
+    public void RefreshHotkeyDisplay() => HotkeyDisplay = Profile.HotkeyDisplayString;
+    public void Refresh()
     {
+        DisplayLabel = Profile.DisplayLabel;
         HotkeyDisplay = Profile.HotkeyDisplayString;
     }
+}
+
+/// <summary>
+/// A single monitor entry in the add/edit panel. Holds the user's selections
+/// for one monitor row.
+/// </summary>
+public partial class MonitorSettingEntry : ObservableObject
+{
+    [ObservableProperty]
+    private MonitorInfo? _selectedMonitor;
+
+    /// <summary>Null = "Don't change resolution".</summary>
+    [ObservableProperty]
+    private DisplayMode? _selectedMode;
+
+    /// <summary>0 = "Don't change DPI".</summary>
+    [ObservableProperty]
+    private int _selectedScale;
+
+    // Used when loading an existing profile to defer selection until combos are populated
+    public int? PendingWidth { get; set; }
+    public int? PendingHeight { get; set; }
+    public int? PendingRefreshRate { get; set; }
+    public int PendingScale { get; set; }
 }
